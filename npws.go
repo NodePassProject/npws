@@ -73,6 +73,7 @@ type Pool struct {
 	dialer    func() (net.Conn, error) // 连接拨号函数
 	server    *http.Server             // HTTP服务器
 	listener  net.Listener             // 网络监听器
+	first     atomic.Bool              // 首次标志
 	errCount  atomic.Int32             // 错误计数
 	capacity  atomic.Int32             // 当前容量
 	minCap    int                      // 最小容量
@@ -291,12 +292,12 @@ func (p *Pool) handleConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	wsConn.SetReadLimit(-1)
 
-	rawID := make([]byte, 4)
-	if _, err := rand.Read(rawID); err != nil {
+	rawID, id, err := p.generateID()
+	if err != nil {
 		wsConn.Close(websocket.StatusInternalError, "id generation failed")
 		return
 	}
-	id := hex.EncodeToString(rawID)
+
 	if _, exist := p.conns.Load(id); exist {
 		wsConn.Close(websocket.StatusInternalError, "duplicate id")
 		return
@@ -530,4 +531,18 @@ func (p *Pool) adjustCapacity(created int) {
 	if ratio > capacityAdjustHighRatio && capacity < p.maxCap {
 		p.capacity.Add(1)
 	}
+}
+
+// generateID 生成唯一连接ID
+func (p *Pool) generateID() ([]byte, string, error) {
+	if p.first.CompareAndSwap(false, true) {
+		return []byte{0, 0, 0, 0}, "00000000", nil
+	}
+
+	rawID := make([]byte, 4)
+	if _, err := rand.Read(rawID); err != nil {
+		return nil, "", err
+	}
+	id := hex.EncodeToString(rawID)
+	return rawID, id, nil
 }
