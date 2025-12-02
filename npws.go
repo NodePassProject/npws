@@ -154,7 +154,7 @@ func NewServerPool(maxCap int, clientIP string, tlsConfig *tls.Config, listener 
 		maxCap = defaultMaxCap
 	}
 
-	if listener == nil || tlsConfig == nil {
+	if listener == nil {
 		return nil
 	}
 
