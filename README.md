@@ -39,7 +39,7 @@ A high-performance, reliable WebSocket connection pool management system for Go 
 - **Automatic connection health monitoring** with keep-alive support
 - **WebSocket connection pooling** with efficient ID-based retrieval
 - **4-byte hex connection identification** for efficient tracking
-- **Multiple TLS security modes** (no TLS, self-signed, verified)
+- **Multiple TLS security modes** (self-signed, verified)
 - **Graceful error handling and recovery** with automatic retry mechanisms
 - **Configurable connection creation intervals** with dynamic adjustment
 - **Auto-reconnection** on connection failures
@@ -73,7 +73,7 @@ func main() {
     minInterval := 500 * time.Millisecond
     maxInterval := 5 * time.Second
     keepAlive := 30 * time.Second
-    tlsMode := "2" // Verified TLS
+    tlsMode := "2" // TLS mode: "1" = self-signed, "2" = verified
     serverURL := "example.com:8443"
 
     clientPool := npws.NewClientPool(
@@ -123,7 +123,7 @@ func main() {
     minInterval := 500 * time.Millisecond  // Minimum creation interval
     maxInterval := 5 * time.Second         // Maximum creation interval
     keepAlive := 30 * time.Second          // Keep-alive period
-    tlsMode := "2"           // TLS mode: "0" = no TLS, "1" = self-signed, "2" = verified
+    tlsMode := "2"           // TLS mode: "1" = self-signed, "2" = verified
     serverURL := "example.com:8443"        // Server address (host:port)
 
     // Create client pool
@@ -379,24 +379,14 @@ serverPool := npws.NewServerPool(
 
 | Mode | Description | Security Level | Use Case |
 |------|-------------|----------------|----------|
-| `"0"` | No TLS (plain WebSocket) | None | Internal networks, development |
 | `"1"` | Self-signed certificates (InsecureSkipVerify) | Medium | Development, testing environments |
 | `"2"` | Verified certificates | High | Production, public networks |
 
-**Note:** Mode `"0"` uses plain WebSocket (`ws://`) without encryption, while modes `"1"` and `"2"` use secure WebSocket (`wss://`) with TLS.
+**Note:** Both modes `"1"` and `"2"` use secure WebSocket (`wss://`) with TLS encryption.
 
 #### Example Usage
 
 ```go
-// No TLS - development only
-clientPool := npws.NewClientPool(
-    5, 20, 
-    500*time.Millisecond, 5*time.Second, 
-    30*time.Second, 
-    "0", 
-    "localhost:8080",
-)
-
 // Self-signed TLS - development/testing (InsecureSkipVerify)
 clientPool := npws.NewClientPool(
     5, 20, 
@@ -549,7 +539,7 @@ func main() {
         5, 20,
         500*time.Millisecond, 5*time.Second,
         30*time.Second,
-        "2",
+        "1",
         "example.com:8443",
     )
 
@@ -1048,18 +1038,6 @@ func createDevPool() *npws.Pool {
         "localhost:8443",
     )
 }
-
-// Test without TLS
-func createTestPool() *npws.Pool {
-    return npws.NewClientPool(
-        2, 5,
-        1*time.Second,
-        5*time.Second,
-        10*time.Second,
-        "0",                            // No TLS
-        "localhost:8080",
-    )
-}
 ```
 
 #### Integration Testing
@@ -1090,7 +1068,7 @@ func TestPoolIntegration(t *testing.T) {
         2, 5,
         500*time.Millisecond, 2*time.Second,
         10*time.Second,
-        "1",
+        "1",  // Self-signed certs for testing
         listener.Addr().String(),
     )
     go clientPool.ClientManager()
