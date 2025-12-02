@@ -109,28 +109,22 @@ func NewClientPool(minCap, maxCap int, minIvl, maxIvl, keepAlive time.Duration, 
 	}
 
 	var tlsConfig *tls.Config
-	var wsScheme string
 	switch tlsCode {
-	case "0":
-		// 不使用TLS
-		wsScheme = "ws"
-	case "1":
+	case "0", "1":
 		// 使用自签名证书（不验证）
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS13,
 		}
-		wsScheme = "wss"
 	default:
 		// 使用验证证书（安全模式）
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: false,
 			MinVersion:         tls.VersionTLS13,
 		}
-		wsScheme = "wss"
 	}
 
-	wsURL := wsScheme + "://" + serverURL + wsPath
+	wsURL := "wss://" + serverURL + wsPath
 	pool := &Pool{
 		conns:     sync.Map{},
 		idChan:    make(chan string, maxCap),
@@ -154,7 +148,7 @@ func NewServerPool(maxCap int, clientIP string, tlsConfig *tls.Config, listener 
 		maxCap = defaultMaxCap
 	}
 
-	if listener == nil {
+	if listener == nil || tlsConfig == nil {
 		return nil
 	}
 
@@ -179,47 +173,27 @@ func (p *Pool) dialWebSocket(wsURL string) (net.Conn, error) {
 	var tlsState *tls.ConnectionState
 	var localAddr, remoteAddr net.Addr
 
-	// 创建HTTP客户端
-	var httpClient *http.Client
-	if p.tlsConfig != nil {
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig:     p.tlsConfig,
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     90 * time.Second,
-				DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					conn, err := (&tls.Dialer{Config: p.tlsConfig}).DialContext(ctx, network, addr)
-					if err != nil {
-						return nil, err
-					}
-					if tlsConn, ok := conn.(*tls.Conn); ok {
-						state := tlsConn.ConnectionState()
-						tlsState = &state
-						localAddr = tlsConn.LocalAddr()
-						remoteAddr = tlsConn.RemoteAddr()
-					}
-					return conn, nil
-				},
+	// 自定义HTTP客户端以捕获TLS状态和地址信息
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig:     p.tlsConfig,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     90 * time.Second,
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				conn, err := (&tls.Dialer{Config: p.tlsConfig}).DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				if tlsConn, ok := conn.(*tls.Conn); ok {
+					state := tlsConn.ConnectionState()
+					tlsState = &state
+					localAddr = tlsConn.LocalAddr()
+					remoteAddr = tlsConn.RemoteAddr()
+				}
+				return conn, nil
 			},
-		}
-	} else {
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     90 * time.Second,
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
-					if err != nil {
-						return nil, err
-					}
-					localAddr = conn.LocalAddr()
-					remoteAddr = conn.RemoteAddr()
-					return conn, nil
-				},
-			},
-		}
+		},
 	}
 
 	wsConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
