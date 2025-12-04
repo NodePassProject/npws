@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -363,6 +364,7 @@ func (p *Pool) ServerManager() {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       p.keepAlive,
+		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 
 	if err := p.server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
