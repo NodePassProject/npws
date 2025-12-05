@@ -33,58 +33,27 @@ const (
 	wsPath                  = "/"
 )
 
-// WSConn WebSocket连接包装器
-type WSConn struct {
-	net.Conn
-	tlsState   *tls.ConnectionState
-	localAddr  net.Addr
-	remoteAddr net.Addr
-}
-
-// ConnectionState 返回TLS连接状态
-func (w *WSConn) ConnectionState() tls.ConnectionState {
-	if w.tlsState != nil {
-		return *w.tlsState
-	}
-	return tls.ConnectionState{}
-}
-
-// LocalAddr 返回本地地址
-func (w *WSConn) LocalAddr() net.Addr {
-	if w.localAddr != nil {
-		return w.localAddr
-	}
-	return w.Conn.LocalAddr()
-}
-
-// RemoteAddr 返回远程地址
-func (w *WSConn) RemoteAddr() net.Addr {
-	if w.remoteAddr != nil {
-		return w.remoteAddr
-	}
-	return w.Conn.RemoteAddr()
-}
-
 // Pool WebSocket连接池结构体
 type Pool struct {
-	conns     sync.Map                 // 连接存储
-	idChan    chan string              // 连接ID通道
-	clientIP  string                   // 客户端IP白名单
-	tlsConfig *tls.Config              // TLS配置
-	dialer    func() (net.Conn, error) // 连接拨号函数
-	server    *http.Server             // HTTP服务器
-	listener  net.Listener             // 网络监听器
-	first     atomic.Bool              // 首次标志
-	errCount  atomic.Int32             // 错误计数
-	capacity  atomic.Int32             // 当前容量
-	minCap    int                      // 最小容量
-	maxCap    int                      // 最大容量
-	interval  atomic.Int64             // 当前间隔
-	minIvl    time.Duration            // 最小间隔
-	maxIvl    time.Duration            // 最大间隔
-	keepAlive time.Duration            // 保活时间
-	ctx       context.Context          // 上下文
-	cancel    context.CancelFunc       // 取消函数
+	conns      sync.Map           // 连接存储
+	idChan     chan string        // 连接ID通道
+	clientIP   string             // 客户端地址
+	serverName string             // 服务器名称
+	serverURL  string             // 服务器URL
+	tlsConfig  *tls.Config        // TLS配置
+	server     *http.Server       // HTTP服务器
+	listener   net.Listener       // 网络监听器
+	first      atomic.Bool        // 首次标志
+	errCount   atomic.Int32       // 错误计数
+	capacity   atomic.Int32       // 当前容量
+	minCap     int                // 最小容量
+	maxCap     int                // 最大容量
+	interval   atomic.Int64       // 当前间隔
+	minIvl     time.Duration      // 最小间隔
+	maxIvl     time.Duration      // 最大间隔
+	keepAlive  time.Duration      // 保活时间
+	ctx        context.Context    // 上下文
+	cancel     context.CancelFunc // 取消函数
 }
 
 // NewClientPool 创建客户端连接池
@@ -109,34 +78,53 @@ func NewClientPool(minCap, maxCap int, minIvl, maxIvl, keepAlive time.Duration, 
 		minIvl, maxIvl = maxIvl, minIvl
 	}
 
+	serverName, serverPort := serverURL, ""
+	if name, port, err := net.SplitHostPort(serverURL); err == nil {
+		serverName, serverPort = name, port
+	}
+
 	var tlsConfig *tls.Config
+	var wsScheme string
 	switch tlsCode {
-	case "0", "1":
-		// 使用自签名证书（不验证）
+	case "1":
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: true,
+			ServerName:         serverName,
 			MinVersion:         tls.VersionTLS13,
 		}
-	default:
-		// 使用验证证书（安全模式）
+		wsScheme = "wss"
+	case "2":
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: false,
+			ServerName:         serverName,
 			MinVersion:         tls.VersionTLS13,
+		}
+		wsScheme = "wss"
+	default:
+		if serverPort == "443" {
+			tlsConfig = &tls.Config{
+				InsecureSkipVerify: false,
+				ServerName:         serverName,
+				MinVersion:         tls.VersionTLS13,
+			}
+			wsScheme = "wss"
+		} else {
+			wsScheme = "ws"
 		}
 	}
 
-	wsURL := "wss://" + serverURL + wsPath
 	pool := &Pool{
-		conns:     sync.Map{},
-		idChan:    make(chan string, maxCap),
-		tlsConfig: tlsConfig,
-		minCap:    minCap,
-		maxCap:    maxCap,
-		minIvl:    minIvl,
-		maxIvl:    maxIvl,
-		keepAlive: keepAlive,
+		conns:      sync.Map{},
+		idChan:     make(chan string, maxCap),
+		serverName: serverName,
+		serverURL:  wsScheme + "://" + serverURL + wsPath,
+		tlsConfig:  tlsConfig,
+		minCap:     minCap,
+		maxCap:     maxCap,
+		minIvl:     minIvl,
+		maxIvl:     maxIvl,
+		keepAlive:  keepAlive,
 	}
-	pool.dialer = func() (net.Conn, error) { return pool.dialWebSocket(wsURL) }
 	pool.capacity.Store(int32(minCap))
 	pool.interval.Store(int64(minIvl))
 	pool.ctx, pool.cancel = context.WithCancel(context.Background())
@@ -149,7 +137,7 @@ func NewServerPool(maxCap int, clientIP string, tlsConfig *tls.Config, listener 
 		maxCap = defaultMaxCap
 	}
 
-	if listener == nil || tlsConfig == nil {
+	if listener == nil {
 		return nil
 	}
 
@@ -166,60 +154,31 @@ func NewServerPool(maxCap int, clientIP string, tlsConfig *tls.Config, listener 
 	return pool
 }
 
-// dialWebSocket 创建WebSocket客户端连接
-func (p *Pool) dialWebSocket(wsURL string) (net.Conn, error) {
+// createConnection 创建客户端连接并完成ID交换
+func (p *Pool) createConnection() bool {
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
 
-	var tlsState *tls.ConnectionState
-	var localAddr, remoteAddr net.Addr
-
-	// 自定义HTTP客户端以捕获TLS状态和地址信息
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig:     p.tlsConfig,
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     90 * time.Second,
-			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				conn, err := (&tls.Dialer{Config: p.tlsConfig}).DialContext(ctx, network, addr)
-				if err != nil {
-					return nil, err
-				}
-				if tlsConn, ok := conn.(*tls.Conn); ok {
-					state := tlsConn.ConnectionState()
-					tlsState = &state
-					localAddr = tlsConn.LocalAddr()
-					remoteAddr = tlsConn.RemoteAddr()
-				}
-				return conn, nil
-			},
-		},
+	var httpClient *http.Client
+	if p.tlsConfig != nil {
+		httpClient = &http.Client{Transport: &http.Transport{
+			TLSClientConfig: p.tlsConfig,
+		}}
+	} else {
+		httpClient = &http.Client{}
 	}
 
-	wsConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+	wsConn, _, err := websocket.Dial(ctx, p.serverURL, &websocket.DialOptions{
 		HTTPClient:      httpClient,
 		CompressionMode: websocket.CompressionDisabled,
+		Host:            p.serverName,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("dialWebSocket: %w", err)
-	}
-	wsConn.SetReadLimit(-1)
-
-	return &WSConn{
-		Conn:       websocket.NetConn(p.ctx, wsConn, websocket.MessageBinary),
-		tlsState:   tlsState,
-		localAddr:  localAddr,
-		remoteAddr: remoteAddr,
-	}, nil
-}
-
-// createConnection 创建客户端连接并完成ID交换
-func (p *Pool) createConnection() bool {
-	conn, err := p.dialer()
 	if err != nil {
 		return false
 	}
+	wsConn.SetReadLimit(-1)
+
+	conn := websocket.NetConn(p.ctx, wsConn, websocket.MessageBinary)
 
 	conn.SetReadDeadline(time.Now().Add(idReadTimeout))
 	buf := make([]byte, 4)
@@ -278,34 +237,17 @@ func (p *Pool) handleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tlsState *tls.ConnectionState
-	var localAddr, remoteAddr net.Addr
-	if r.TLS != nil {
-		tlsState = r.TLS
-	}
-	if p.listener != nil {
-		localAddr = p.listener.Addr()
-	}
-	if addr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr); err == nil {
-		remoteAddr = addr
-	}
-
-	wrappedConn := &WSConn{
-		Conn:       websocket.NetConn(p.ctx, wsConn, websocket.MessageBinary),
-		tlsState:   tlsState,
-		localAddr:  localAddr,
-		remoteAddr: remoteAddr,
-	}
-	if _, err := wrappedConn.Write(rawID); err != nil {
-		wrappedConn.Close()
+	conn := websocket.NetConn(p.ctx, wsConn, websocket.MessageBinary)
+	if _, err := conn.Write(rawID); err != nil {
+		conn.Close()
 		return
 	}
 
 	select {
 	case p.idChan <- id:
-		p.conns.Store(id, wrappedConn)
+		p.conns.Store(id, conn)
 	default:
-		wrappedConn.Close()
+		conn.Close()
 	}
 }
 
@@ -356,7 +298,13 @@ func (p *Pool) ServerManager() {
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	tlsListener := tls.NewListener(p.listener, p.tlsConfig)
+	var listener net.Listener
+	if p.tlsConfig != nil {
+		listener = tls.NewListener(p.listener, p.tlsConfig)
+	} else {
+		listener = p.listener
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(wsPath, p.handleConnection)
 
@@ -367,7 +315,7 @@ func (p *Pool) ServerManager() {
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 
-	if err := p.server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+	if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		if p.ctx.Err() == nil {
 			p.errCount.Add(1)
 		}
