@@ -56,6 +56,20 @@ type Pool struct {
 	cancel     context.CancelFunc // 取消函数
 }
 
+// tlsConn 包装net.Conn以返回TLS连接状态
+type tlsConn struct {
+	net.Conn
+	tlsState *tls.ConnectionState
+}
+
+// ConnectionState 获取TLS连接状态
+func (tc *tlsConn) ConnectionState() tls.ConnectionState {
+	if tc.tlsState != nil {
+		return *tc.tlsState
+	}
+	return tls.ConnectionState{}
+}
+
 // NewClientPool 创建客户端连接池
 func NewClientPool(minCap, maxCap int, minIvl, maxIvl, keepAlive time.Duration, tlsCode, serverURL string) *Pool {
 	if minCap <= 0 {
@@ -168,7 +182,7 @@ func (p *Pool) createConnection() bool {
 		httpClient = &http.Client{}
 	}
 
-	wsConn, _, err := websocket.Dial(ctx, p.serverURL, &websocket.DialOptions{
+	wsConn, resp, err := websocket.Dial(ctx, p.serverURL, &websocket.DialOptions{
 		HTTPClient:      httpClient,
 		CompressionMode: websocket.CompressionDisabled,
 		Host:            p.serverName,
@@ -177,6 +191,11 @@ func (p *Pool) createConnection() bool {
 		return false
 	}
 	wsConn.SetReadLimit(-1)
+
+	var tlsState *tls.ConnectionState
+	if resp != nil && resp.TLS != nil {
+		tlsState = resp.TLS
+	}
 
 	conn := websocket.NetConn(p.ctx, wsConn, websocket.MessageBinary)
 
@@ -190,13 +209,21 @@ func (p *Pool) createConnection() bool {
 	id := hex.EncodeToString(buf)
 	conn.SetReadDeadline(time.Time{})
 
-	p.conns.Store(id, conn)
+	var wrappedConn net.Conn = conn
+	if tlsState != nil {
+		wrappedConn = &tlsConn{
+			Conn:     conn,
+			tlsState: tlsState,
+		}
+	}
+
+	p.conns.Store(id, wrappedConn)
 	select {
 	case p.idChan <- id:
 		return true
 	default:
 		p.conns.Delete(id)
-		conn.Close()
+		wrappedConn.Close()
 		return false
 	}
 }
