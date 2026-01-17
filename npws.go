@@ -1,4 +1,3 @@
-// Package npws 实现了基于WebSocket的高性能连接池管理系统
 package npws
 
 import (
@@ -33,36 +32,33 @@ const (
 	wsPath                  = "/"
 )
 
-// Pool WebSocket连接池结构体
 type Pool struct {
-	conns      sync.Map           // 连接存储
-	idChan     chan string        // 连接ID通道
-	clientIP   string             // 客户端地址
-	serverName string             // 服务器名称
-	serverURL  string             // 服务器URL
-	tlsConfig  *tls.Config        // TLS配置
-	server     *http.Server       // HTTP服务器
-	listener   net.Listener       // 网络监听器
-	first      atomic.Bool        // 首次标志
-	errCount   atomic.Int32       // 错误计数
-	capacity   atomic.Int32       // 当前容量
-	minCap     int                // 最小容量
-	maxCap     int                // 最大容量
-	interval   atomic.Int64       // 当前间隔
-	minIvl     time.Duration      // 最小间隔
-	maxIvl     time.Duration      // 最大间隔
-	keepAlive  time.Duration      // 保活时间
-	ctx        context.Context    // 上下文
-	cancel     context.CancelFunc // 取消函数
+	conns      sync.Map
+	idChan     chan string
+	clientIP   string
+	serverName string
+	serverURL  string
+	tlsConfig  *tls.Config
+	server     *http.Server
+	listener   net.Listener
+	first      atomic.Bool
+	errCount   atomic.Int32
+	capacity   atomic.Int32
+	minCap     int
+	maxCap     int
+	interval   atomic.Int64
+	minIvl     time.Duration
+	maxIvl     time.Duration
+	keepAlive  time.Duration
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
-// tlsConn 包装net.Conn以返回TLS连接状态
 type tlsConn struct {
 	net.Conn
 	tlsState *tls.ConnectionState
 }
 
-// ConnectionState 获取TLS连接状态
 func (tc *tlsConn) ConnectionState() tls.ConnectionState {
 	if tc.tlsState != nil {
 		return *tc.tlsState
@@ -70,7 +66,6 @@ func (tc *tlsConn) ConnectionState() tls.ConnectionState {
 	return tls.ConnectionState{}
 }
 
-// NewClientPool 创建客户端连接池
 func NewClientPool(minCap, maxCap int, minIvl, maxIvl, keepAlive time.Duration, tlsCode, serverURL string) *Pool {
 	if minCap <= 0 {
 		minCap = defaultMinCap
@@ -145,7 +140,6 @@ func NewClientPool(minCap, maxCap int, minIvl, maxIvl, keepAlive time.Duration, 
 	return pool
 }
 
-// NewServerPool 创建服务端连接池
 func NewServerPool(maxCap int, clientIP string, tlsConfig *tls.Config, listener net.Listener, keepAlive time.Duration) *Pool {
 	if maxCap <= 0 {
 		maxCap = defaultMaxCap
@@ -168,7 +162,6 @@ func NewServerPool(maxCap int, clientIP string, tlsConfig *tls.Config, listener 
 	return pool
 }
 
-// createConnection 创建客户端连接并完成ID交换
 func (p *Pool) createConnection() bool {
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
@@ -228,7 +221,6 @@ func (p *Pool) createConnection() bool {
 	}
 }
 
-// handleConnection 处理服务端WebSocket连接
 func (p *Pool) handleConnection(w http.ResponseWriter, r *http.Request) {
 	if p.Active() >= p.maxCap {
 		http.Error(w, "pool full", http.StatusServiceUnavailable)
@@ -278,7 +270,6 @@ func (p *Pool) handleConnection(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ClientManager 客户端连接池管理器
 func (p *Pool) ClientManager() {
 	if p.cancel != nil {
 		p.cancel()
@@ -318,7 +309,6 @@ func (p *Pool) ClientManager() {
 	}
 }
 
-// ServerManager 服务端连接池管理器
 func (p *Pool) ServerManager() {
 	if p.cancel != nil {
 		p.cancel()
@@ -349,7 +339,6 @@ func (p *Pool) ServerManager() {
 	}
 }
 
-// OutgoingGet 根据ID获取池连接
 func (p *Pool) OutgoingGet(id string, timeout time.Duration) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, timeout)
 	defer cancel()
@@ -371,7 +360,6 @@ func (p *Pool) OutgoingGet(id string, timeout time.Duration) (net.Conn, error) {
 	}
 }
 
-// IncomingGet 获取池连接并返回ID
 func (p *Pool) IncomingGet(timeout time.Duration) (string, net.Conn, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, timeout)
 	defer cancel()
@@ -388,7 +376,6 @@ func (p *Pool) IncomingGet(timeout time.Duration) (string, net.Conn, error) {
 	}
 }
 
-// Flush 清空连接池
 func (p *Pool) Flush() {
 	var wg sync.WaitGroup
 	p.conns.Range(func(key, value any) bool {
@@ -405,7 +392,6 @@ func (p *Pool) Flush() {
 	p.idChan = make(chan string, p.maxCap)
 }
 
-// Close 关闭连接池
 func (p *Pool) Close() {
 	if p.cancel != nil {
 		p.cancel()
@@ -418,42 +404,34 @@ func (p *Pool) Close() {
 	p.Flush()
 }
 
-// Ready 检查连接池是否就绪
 func (p *Pool) Ready() bool {
 	return p.ctx != nil
 }
 
-// Active 获取活跃连接数
 func (p *Pool) Active() int {
 	return len(p.idChan)
 }
 
-// Capacity 获取当前容量
 func (p *Pool) Capacity() int {
 	return int(p.capacity.Load())
 }
 
-// Interval 获取当前间隔
 func (p *Pool) Interval() time.Duration {
 	return time.Duration(p.interval.Load())
 }
 
-// AddError 增加错误计数
 func (p *Pool) AddError() {
 	p.errCount.Add(1)
 }
 
-// ErrorCount 获取错误计数
 func (p *Pool) ErrorCount() int {
 	return int(p.errCount.Load())
 }
 
-// ResetError 重置错误计数
 func (p *Pool) ResetError() {
 	p.errCount.Store(0)
 }
 
-// adjustInterval 动态调整连接创建间隔
 func (p *Pool) adjustInterval() {
 	idle := len(p.idChan)
 	capacity := int(p.capacity.Load())
@@ -470,7 +448,6 @@ func (p *Pool) adjustInterval() {
 	}
 }
 
-// adjustCapacity 动态调整连接池容量
 func (p *Pool) adjustCapacity(created int) {
 	capacity := int(p.capacity.Load())
 	ratio := float64(created) / float64(capacity)
@@ -484,7 +461,6 @@ func (p *Pool) adjustCapacity(created int) {
 	}
 }
 
-// generateID 生成唯一连接ID
 func (p *Pool) generateID() ([]byte, string, error) {
 	if p.first.CompareAndSwap(false, true) {
 		return []byte{0, 0, 0, 0}, "00000000", nil
